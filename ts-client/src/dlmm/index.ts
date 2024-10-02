@@ -184,7 +184,7 @@ export class DLMM {
     binStep: BN,
     baseFactor: BN,
     opt?: Opt
-  ) {
+  ): Promise<PublicKey | null> {
     const cluster = opt?.cluster || "mainnet-beta";
 
     const provider = new AnchorProvider(
@@ -1866,7 +1866,10 @@ export class DLMM {
     const { minBinId, maxBinId } = strategy;
 
     const lowerBinArrayIndex = binIdToBinArrayIndex(new BN(minBinId));
-    const upperBinArrayIndex = binIdToBinArrayIndex(new BN(maxBinId));
+    const upperBinArrayIndex = BN.max(
+      binIdToBinArrayIndex(new BN(maxBinId)),
+      lowerBinArrayIndex.add(new BN(1))
+    );
 
     const binArraysCount = (
       await this.binArraysToBeCreate(lowerBinArrayIndex, upperBinArrayIndex)
@@ -1881,6 +1884,53 @@ export class DLMM {
       positionCount,
       positionCost,
     };
+  }
+
+  /**
+   * Creates an empty position and initializes the corresponding bin arrays if needed.
+   * @param param0 The settings of the requested new position.
+   * @returns A promise that resolves into a transaction for creating the requested position.
+   */
+  public async createEmptyPosition({
+    positionPubKey,
+    minBinId,
+    maxBinId,
+    user,
+  }: {
+    positionPubKey: PublicKey;
+    minBinId: number;
+    maxBinId: number;
+    user: PublicKey;
+  }) {
+    const setComputeUnitLimitIx = computeBudgetIx();
+    const createPositionIx = await this.program.methods
+      .initializePosition(minBinId, maxBinId - minBinId + 1)
+      .accounts({
+        payer: user,
+        position: positionPubKey,
+        lbPair: this.pubkey,
+        owner: user,
+      })
+      .instruction();
+
+    const lowerBinArrayIndex = binIdToBinArrayIndex(new BN(minBinId));
+    const upperBinArrayIndex = BN.max(
+      lowerBinArrayIndex.add(new BN(1)),
+      binIdToBinArrayIndex(new BN(maxBinId))
+    );
+    const createBinArrayIxs = await this.createBinArraysIfNeeded(
+      upperBinArrayIndex,
+      lowerBinArrayIndex,
+      user
+    );
+
+    const { blockhash, lastValidBlockHeight } =
+      await this.program.provider.connection.getLatestBlockhash("confirmed");
+    return new Transaction({
+      blockhash,
+      lastValidBlockHeight,
+      feePayer: user,
+    }).add(setComputeUnitLimitIx, createPositionIx, ...createBinArrayIxs);
   }
 
   /**
@@ -2970,112 +3020,6 @@ export class DLMM {
         feePayer: user,
       }).add(removeLiquidityTx);
     }
-  }
-
-  public async removeLiquiditySingleSide({
-    user,
-    position,
-    binIds,
-    removeLiquidityForY = false,
-  }: {
-    user: PublicKey;
-    position: PublicKey;
-    binIds: number[];
-    removeLiquidityForY?: boolean;
-  }): Promise<Transaction | Transaction[]> {
-    const { lbPair, lowerBinId, owner, feeOwner } =
-      await this.program.account.positionV2.fetch(position);
-
-    const { reserveX, reserveY, tokenXMint, tokenYMint } =
-      await this.program.account.lbPair.fetch(lbPair);
-
-    const lowerBinArrayIndex = binIdToBinArrayIndex(new BN(lowerBinId));
-    const upperBinArrayIndex = lowerBinArrayIndex.add(new BN(1));
-    const [binArrayLower] = deriveBinArray(
-      lbPair,
-      lowerBinArrayIndex,
-      this.program.programId
-    );
-    const [binArrayUpper] = deriveBinArray(
-      lbPair,
-      upperBinArrayIndex,
-      this.program.programId
-    );
-
-    const preInstructions: Array<TransactionInstruction> = [];
-    const setComputeUnitLimitIx = computeBudgetIx();
-    preInstructions.push(setComputeUnitLimitIx);
-
-    const { ataPubKey: userToken, ix: createPayerTokenIx } = removeLiquidityForY
-      ? await getOrCreateATAInstruction(
-          this.program.provider.connection,
-          this.tokenY.publicKey,
-          owner,
-          user
-        )
-      : await getOrCreateATAInstruction(
-          this.program.provider.connection,
-          this.tokenX.publicKey,
-          owner,
-          user
-        );
-
-    createPayerTokenIx && preInstructions.push(createPayerTokenIx);
-
-    const postInstructions: Array<TransactionInstruction> = [];
-
-    const shouldUnwrapSOL =
-      (removeLiquidityForY && this.tokenY.publicKey.equals(NATIVE_MINT)) ||
-      (!removeLiquidityForY && this.tokenX.publicKey.equals(NATIVE_MINT));
-
-    if (shouldUnwrapSOL) {
-      const closeWrappedSOLIx = await unwrapSOLInstruction(user);
-      closeWrappedSOLIx && postInstructions.push(closeWrappedSOLIx);
-    }
-
-    const minBinId = Math.min(...binIds);
-    const maxBinId = Math.max(...binIds);
-
-    const minBinArrayIndex = binIdToBinArrayIndex(new BN(minBinId));
-    const maxBinArrayIndex = binIdToBinArrayIndex(new BN(maxBinId));
-
-    const useExtension =
-      isOverflowDefaultBinArrayBitmap(minBinArrayIndex) ||
-      isOverflowDefaultBinArrayBitmap(maxBinArrayIndex);
-
-    const binArrayBitmapExtension = useExtension
-      ? deriveBinArrayBitmapExtension(this.pubkey, this.program.programId)[0]
-      : null;
-
-    const reserve = removeLiquidityForY ? reserveY : reserveX;
-    const tokenMint = removeLiquidityForY ? tokenYMint : tokenXMint;
-
-    const removeLiquiditySingleSideTx = await this.program.methods
-      .removeLiquiditySingleSide()
-      .accounts({
-        position,
-        lbPair,
-        binArrayBitmapExtension,
-        userToken,
-        reserve,
-        tokenMint,
-        binArrayLower,
-        binArrayUpper,
-        sender: user,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      })
-      .preInstructions(preInstructions)
-      .postInstructions(postInstructions)
-      .transaction();
-
-    const { blockhash, lastValidBlockHeight } =
-      await this.program.provider.connection.getLatestBlockhash("confirmed");
-
-    return new Transaction({
-      blockhash,
-      lastValidBlockHeight,
-      feePayer: user,
-    }).add(removeLiquiditySingleSideTx);
   }
 
   /**
@@ -5418,19 +5362,20 @@ export class DLMM {
 
     const binArrays: PublicKey[] = [];
     for (const idx of binArrayIndexes) {
-      const [binArray] = deriveBinArray(
+      const [binArrayPubKey] = deriveBinArray(
         this.pubkey,
         idx,
         this.program.programId
       );
-      const binArrayAccount =
-        await this.program.provider.connection.getAccountInfo(binArray);
-
-      if (binArrayAccount === null) {
-        binArrays.push(binArray);
-      }
+      binArrays.push(binArrayPubKey);
     }
-    return binArrays;
+
+    const binArrayAccounts =
+      await this.program.provider.connection.getMultipleAccountsInfo(binArrays);
+
+    return binArrayAccounts
+      .filter((binArray) => binArray === null)
+      .map((_, index) => binArrays[index]);
   }
 
   private async createBinArraysIfNeeded(

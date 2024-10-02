@@ -19,7 +19,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-## @meteora-ag/dlmm [1.1.4] - PR #106
+## @meteora-ag/dlmm [1.2.2] - PR #110
+
+### Fixed
+
+- Fixed `quoteCreatePosition` incorrect result if bin range too short
+
+## @meteora-ag/dlmm [1.2.0] - PR #109
+
+### Removed
+
+- Removed `removeLiquiditySingleSide`
+
+## @meteora-ag/dlmm [1.1.6] - PR #108
+
+### Added
+
+- new method `createEmptyPosition` allows to create an empty position with the corresponding bin arrays.
+
+## @meteora-ag/dlmm [1.1.5] - PR #107
+
+### Fixed
+
+- fix `getPairPubkeyIfExists` return type
+
+## @meteora-ag/dlmm [1.1.4] - PR #107
 
 ### Fixed
 
