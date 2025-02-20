@@ -1,5 +1,8 @@
 use std::rc::Rc;
+use std::time::Duration;
 
+use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
+use anchor_client::solana_sdk::instruction::Instruction;
 use anchor_client::Client;
 use anchor_client::{
     solana_client::rpc_config::RpcSendTransactionConfig,
@@ -16,7 +19,18 @@ mod instructions;
 mod math;
 
 use args::*;
+use instructions::get_all_positions::get_all_positions;
+use instructions::initialize_customizable_permissionless_lb_pair::InitCustomizablePermissionlessLbPairParameters;
 use instructions::initialize_lb_pair::*;
+use instructions::seed_liquidity_from_operator::{
+    seed_liquidity_by_operator, SeedLiquidityByOperatorParameters,
+};
+use instructions::seed_liquidity_single_bin::{
+    seed_liquidity_single_bin, SeedLiquiditySingleBinParameters,
+};
+use instructions::seed_liquidity_single_bin_by_operator::{
+    seed_liquidity_single_bin_by_operator, SeedLiquiditySingleBinByOperatorParameters,
+};
 use lb_clmm::state::preset_parameters::PresetParameter;
 
 use crate::instructions::initialize_bin_array_with_bin_range::{
@@ -41,6 +55,7 @@ use crate::{
         initialize_bin_array_with_price_range::{
             initialize_bin_array_with_price_range, InitBinArrayWithPriceRangeParameters,
         },
+        initialize_customizable_permissionless_lb_pair::initialize_customizable_permissionless_lb_pair,
         initialize_permission_lb_pair::{
             initialize_permission_lb_pair, InitPermissionLbPairParameters,
         },
@@ -54,6 +69,7 @@ use crate::{
         },
         seed_liquidity::{seed_liquidity, SeedLiquidityParameters},
         set_activation_point::*,
+        set_pair_status::{set_pair_status, SetPairStatusParam},
         set_pre_activation_duration::{set_pre_activation_duration, SetPreactivationDurationParam},
         set_pre_activation_swap_address::{
             set_pre_activation_swap_address, SetPreactivationSwapAddressParam,
@@ -63,13 +79,21 @@ use crate::{
         swap_exact_in::{swap, SwapExactInParameters},
         swap_exact_out::{swap_exact_out, SwapExactOutParameters},
         swap_with_price_impact::{swap_with_price_impact, SwapWithPriceImpactParameters},
-        toggle_pair_status::toggle_pool_status,
         update_reward_duration::*,
         update_reward_funder::*,
-        update_whitelisted_wallet::update_whitelisted_wallet,
         withdraw_protocol_fee::{withdraw_protocol_fee, WithdrawProtocolFeeParams},
     },
 };
+
+fn get_set_compute_unit_price_ix(micro_lamports: u64) -> Option<Instruction> {
+    if micro_lamports > 0 {
+        Some(ComputeBudgetInstruction::set_compute_unit_price(
+            micro_lamports,
+        ))
+    } else {
+        None
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -96,6 +120,8 @@ async fn main() -> Result<()> {
         max_retries: None,
         min_context_slot: None,
     };
+
+    let compute_unit_price_ix = get_set_compute_unit_price_ix(cli.config_override.priority_fee);
 
     match cli.command {
         Command::InitializePair {
@@ -188,7 +214,13 @@ async fn main() -> Result<()> {
                 bin_liquidity_distribution,
                 position,
             };
-            add_liquidity(params, &amm_program, transaction_config).await?;
+            add_liquidity(
+                params,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
         }
         Command::RemoveLiquidity {
             lb_pair,
@@ -200,7 +232,13 @@ async fn main() -> Result<()> {
                 position,
                 bin_liquidity_removal,
             };
-            remove_liquidity(params, &amm_program, transaction_config).await?;
+            remove_liquidity(
+                params,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
         }
         Command::SwapExactIn {
             lb_pair,
@@ -234,7 +272,13 @@ async fn main() -> Result<()> {
                 reward_index,
                 position,
             };
-            claim_reward(params, &amm_program, transaction_config).await?;
+            claim_reward(
+                params,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
         }
         Command::UpdateRewardDuration {
             lb_pair,
@@ -264,7 +308,13 @@ async fn main() -> Result<()> {
             close_position(position, &amm_program, transaction_config).await?;
         }
         Command::ClaimFee { position } => {
-            claim_fee(position, &amm_program, transaction_config).await?;
+            claim_fee(
+                position,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
         }
         Command::IncreaseLength {
             lb_pair,
@@ -297,7 +347,13 @@ async fn main() -> Result<()> {
                 y_amount,
                 side_ratio,
             };
-            simulate_swap_demand(params, &amm_program, transaction_config).await?;
+            simulate_swap_demand(
+                params,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
         }
         Command::SwapExactOut {
             lb_pair,
@@ -325,6 +381,203 @@ async fn main() -> Result<()> {
             };
             swap_with_price_impact(params, &amm_program, transaction_config).await?;
         }
+        Command::InitializeCustomizablePermissionlessLbPair {
+            token_mint_x,
+            token_mint_y,
+            bin_step,
+            initial_price,
+            base_fee_bps,
+            activation_type,
+            has_alpha_vault,
+            activation_point,
+            selective_rounding,
+        } => {
+            let params = InitCustomizablePermissionlessLbPairParameters {
+                token_mint_x,
+                token_mint_y,
+                bin_step,
+                initial_price,
+                base_fee_bps,
+                activation_point,
+                has_alpha_vault,
+                activation_type,
+                selective_rounding,
+            };
+            initialize_customizable_permissionless_lb_pair(
+                params,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
+        }
+        Command::SeedLiquidity {
+            lb_pair,
+            base_position_path,
+            amount,
+            min_price,
+            max_price,
+            base_pubkey,
+            curvature,
+            position_owner_path,
+            max_retries,
+        } => {
+            let mut retry_count = 0;
+            loop {
+                let position_base_kp = read_keypair_file(base_position_path.clone())
+                    .expect("position base keypair file not found");
+
+                let position_owner_kp = read_keypair_file(position_owner_path.clone())
+                    .expect("position owner keypair file not found");
+
+                let params = SeedLiquidityParameters {
+                    lb_pair,
+                    position_base_kp,
+                    amount,
+                    min_price,
+                    max_price,
+                    base_pubkey,
+                    position_owner_kp,
+                    curvature,
+                };
+                if let Err(err) = seed_liquidity(
+                    params,
+                    &amm_program,
+                    transaction_config,
+                    compute_unit_price_ix.clone(),
+                )
+                .await
+                {
+                    println!("Error: {}", err);
+                    retry_count += 1;
+                    if retry_count >= max_retries {
+                        println!("Exceeded max retries {}", max_retries);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(16)).await;
+                } else {
+                    break;
+                }
+            }
+        }
+        Command::SeedLiquidityByOperator {
+            lb_pair,
+            base_position_path,
+            amount,
+            min_price,
+            max_price,
+            base_pubkey,
+            curvature,
+            position_owner,
+            fee_owner,
+            lock_release_point,
+            max_retries,
+        } => {
+            let mut retry_count = 0;
+            loop {
+                let position_base_kp = read_keypair_file(base_position_path.clone())
+                    .expect("position base keypair file not found");
+
+                let params = SeedLiquidityByOperatorParameters {
+                    lb_pair,
+                    position_base_kp,
+                    amount,
+                    min_price,
+                    max_price,
+                    base_pubkey,
+                    position_owner,
+                    fee_owner,
+                    lock_release_point,
+                    curvature,
+                };
+                if let Err(err) = seed_liquidity_by_operator(
+                    params,
+                    &amm_program,
+                    transaction_config,
+                    compute_unit_price_ix.clone(),
+                )
+                .await
+                {
+                    println!("Error: {}", err);
+                    retry_count += 1;
+                    if retry_count >= max_retries {
+                        println!("Exceeded max retries {}", max_retries);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(16)).await;
+                } else {
+                    break;
+                }
+            }
+        }
+        Command::SeedLiquiditySingleBin {
+            lb_pair,
+            base_position_path,
+            base_pubkey,
+            amount,
+            price,
+            position_owner_path,
+            selective_rounding,
+        } => {
+            let position_base_kp = read_keypair_file(base_position_path)
+                .expect("position base keypair file not found");
+
+            let position_owner_kp = read_keypair_file(position_owner_path)
+                .expect("position owner keypair file not found");
+
+            let params = SeedLiquiditySingleBinParameters {
+                lb_pair,
+                position_base_kp,
+                amount,
+                price,
+                base_pubkey,
+                position_owner_kp,
+                selective_rounding,
+            };
+            seed_liquidity_single_bin(
+                params,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
+        }
+        Command::SeedLiquiditySingleBinByOperator {
+            lb_pair,
+            base_position_path,
+            base_pubkey,
+            amount,
+            price,
+            position_owner,
+            fee_owner,
+            lock_release_point,
+            selective_rounding,
+        } => {
+            let position_base_kp = read_keypair_file(base_position_path)
+                .expect("position base keypair file not found");
+
+            let params = SeedLiquiditySingleBinByOperatorParameters {
+                lb_pair,
+                position_base_kp,
+                amount,
+                price,
+                base_pubkey,
+                position_owner,
+                fee_owner,
+                lock_release_point,
+                selective_rounding,
+            };
+            seed_liquidity_single_bin_by_operator(
+                params,
+                &amm_program,
+                transaction_config,
+                compute_unit_price_ix,
+            )
+            .await?;
+        }
+        Command::GetAllPositionsForAnOwner { lb_pair, owner } => {
+            get_all_positions(&amm_program, lb_pair, owner).await?;
+        }
         Command::Admin(admin_command) => match admin_command {
             AdminCommand::InitializePermissionPair {
                 bin_step,
@@ -350,27 +603,6 @@ async fn main() -> Result<()> {
                 };
                 initialize_permission_lb_pair(params, &amm_program, transaction_config).await?;
             }
-            AdminCommand::TogglePoolStatus { lb_pair } => {
-                toggle_pool_status(lb_pair, &amm_program, transaction_config).await?;
-            }
-            AdminCommand::SeedLiquidity {
-                lb_pair,
-                base_position_path,
-                amount,
-                min_price,
-                max_price,
-            } => {
-                let position_base_kp = read_keypair_file(base_position_path)
-                    .expect("position base keypair file not found");
-                let params = SeedLiquidityParameters {
-                    lb_pair,
-                    position_base_kp,
-                    amount,
-                    min_price,
-                    max_price,
-                };
-                seed_liquidity(params, &amm_program, transaction_config).await?;
-            }
             AdminCommand::RemoveLiquidityByPriceRange {
                 lb_pair,
                 base_position_key,
@@ -383,7 +615,13 @@ async fn main() -> Result<()> {
                     min_price,
                     max_price,
                 };
-                remove_liquidity_by_price_range(params, &amm_program, transaction_config).await?;
+                remove_liquidity_by_price_range(
+                    params,
+                    &amm_program,
+                    transaction_config,
+                    compute_unit_price_ix,
+                )
+                .await?;
             }
             AdminCommand::CheckMyBalance {
                 lb_pair,
@@ -411,20 +649,6 @@ async fn main() -> Result<()> {
             }
             AdminCommand::ClosePresetParameter { preset_parameter } => {
                 close_preset_parameter(preset_parameter, &amm_program, transaction_config).await?;
-            }
-            AdminCommand::UpdateWhitelistedWallet {
-                lb_pair,
-                wallet_address,
-                idx,
-            } => {
-                update_whitelisted_wallet(
-                    lb_pair,
-                    idx,
-                    wallet_address,
-                    &amm_program,
-                    transaction_config,
-                )
-                .await?
             }
             AdminCommand::InitializePresetParameter {
                 bin_step,
@@ -475,7 +699,13 @@ async fn main() -> Result<()> {
                     reward_index,
                     funding_amount,
                 };
-                fund_reward(params, &amm_program, transaction_config).await?;
+                fund_reward(
+                    params,
+                    &amm_program,
+                    transaction_config,
+                    compute_unit_price_ix,
+                )
+                .await?;
             }
             AdminCommand::InitializeReward {
                 lb_pair,
@@ -512,6 +742,16 @@ async fn main() -> Result<()> {
                     pre_activation_duration,
                 };
                 set_pre_activation_duration(params, &amm_program, transaction_config).await?;
+            }
+            AdminCommand::SetPairStatus {
+                lb_pair,
+                pair_status,
+            } => {
+                let params = SetPairStatusParam {
+                    lb_pair,
+                    pair_status,
+                };
+                set_pair_status(params, &amm_program, transaction_config).await?;
             }
         },
     };

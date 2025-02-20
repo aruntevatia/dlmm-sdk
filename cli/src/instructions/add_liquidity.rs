@@ -2,12 +2,13 @@ use std::ops::Deref;
 
 use anchor_client::solana_client::rpc_config::RpcSendTransactionConfig;
 use anchor_client::solana_sdk::compute_budget::ComputeBudgetInstruction;
+use anchor_client::solana_sdk::instruction::Instruction;
 use anchor_client::{solana_sdk::pubkey::Pubkey, solana_sdk::signer::Signer, Program};
 
 use anyhow::*;
 use lb_clmm::accounts;
 use lb_clmm::instruction;
-use lb_clmm::instructions::add_liquidity::{BinLiquidityDistribution, LiquidityParameter};
+use lb_clmm::instructions::deposit::add_liquidity::{BinLiquidityDistribution, LiquidityParameter};
 
 use crate::instructions::utils::{get_bin_arrays_for_position, get_or_create_ata};
 use lb_clmm::constants::BASIS_POINT_MAX;
@@ -27,6 +28,7 @@ pub async fn add_liquidity<C: Deref<Target = impl Signer> + Clone>(
     params: AddLiquidityParam,
     program: &Program<C>,
     transaction_config: RpcSendTransactionConfig,
+    compute_unit_price: Option<Instruction>,
 ) -> Result<()> {
     let AddLiquidityParam {
         lb_pair,
@@ -54,6 +56,7 @@ pub async fn add_liquidity<C: Deref<Target = impl Signer> + Clone>(
         transaction_config,
         lb_pair_state.token_x_mint,
         program.payer(),
+        compute_unit_price.clone(),
     )
     .await?;
 
@@ -62,6 +65,7 @@ pub async fn add_liquidity<C: Deref<Target = impl Signer> + Clone>(
         transaction_config,
         lb_pair_state.token_y_mint,
         program.payer(),
+        compute_unit_price.clone(),
     )
     .await?;
 
